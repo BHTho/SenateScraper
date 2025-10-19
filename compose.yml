@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  scraper:
+    build:
+      context: .
+      dockerfile: app/dockerfile
+    volumes:
+      - .:/app
+    container_name: scraper_service
+
