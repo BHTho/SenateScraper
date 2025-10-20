@@ -6,6 +6,7 @@ async def scrape():
     print("Scraping started...")
     scraper = SenateScraper()
     scraper.scrape()
+    scraper.saveResults()
     print("Scraping finished.")
 
 
