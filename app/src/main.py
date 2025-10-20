@@ -1,9 +1,11 @@
 import asyncio
+from scraper.scraper import SenateScraper
 
 
 async def scrape():
     print("Scraping started...")
-    await asyncio.sleep(2)
+    scraper = SenateScraper()
+    scraper.scrape()
     print("Scraping finished.")
 
 
