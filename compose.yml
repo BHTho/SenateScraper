@@ -8,4 +8,6 @@ services:
     volumes:
       - .:/app
     container_name: scraper_service
+    env_file:
+      - .env
 

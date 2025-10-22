@@ -2,6 +2,11 @@
 downloaded_files/
 .vscode/
 
+*.csv
+*.csv#
+*.xlsx
+*.xlsx#
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

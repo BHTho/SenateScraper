@@ -1,7 +1,12 @@
 from seleniumbase import SB
 from datetime import date, timedelta
+import hashlib
 import re
-import uuid
+import json
+import csv
+import os
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 
 
 class SenateScraper:
@@ -13,21 +18,42 @@ class SenateScraper:
         self.fromDate_field_selector = "#fromDate"
         self.searchButton_selector = "button.btn.btn-primary"
         # self.fromDate = self._getFromDate()
-        self.fromDate = "10/01/2025" # hardcoded for testing
+        self.fromDate = "01/01/2015"
         self.resultsTable_selector = 'tbody'
         self.nextPageButton_selector = "#filedReports_next"
         self.links = []
         self.data = []
+        self.used_ids = {}
+        self.aws_region = os.getenv('AWS_REGION', None)
+        self.dynamodb_table_name = os.getenv('DYNAMO_TABLE_NAME', None)
+        self._credentials_check()
+
+
+    def _credentials_check(self):
+        if os.getenv('OUTPUT_AWS', '0') == '1':
+            assert self.aws_region, "AWS_REGION not set"
+            assert self.dynamodb_table_name, "DYNAMO_TABLE_NAME not set"
+            assert os.getenv('AWS_ACCESS_KEY', None), "AWS_ACCESS_KEY not set"
+            assert os.getenv('AWS_SECRET_KEY', None), "AWS_SECRET_KEY not set"
+
 
     # def _getFromDate(self):
     #     today = date.today()
-    #     one_week_ago = today - timedelta(weeks=1)
-    #     return one_week_ago.strftime("%m/%d/%Y")
+    #     one_day_ago = today - timedelta(days=1)
+    #     return one_day_ago.strftime("%m/%d/%Y")
+
 
     def _is_next_enabled(self, sb: SB):
         next_button = sb.find_element(self.nextPageButton_selector)
         class_attr = next_button.get_attribute("class")
         return "disabled" not in class_attr
+
+
+    def _get_id(self, record_dict: dict) -> str:
+        dedupe_fields = (x for x in record_dict.keys() if x != 'id')
+        dedupe_dict = {k: record_dict[k] for k in dedupe_fields}
+        record_str = json.dumps(dedupe_dict, sort_keys=True).encode('utf-8')
+        return hashlib.md5(record_str).hexdigest()
 
 
     def _agreeToTerms(self, sb: SB):
@@ -60,13 +86,14 @@ class SenateScraper:
             sb.wait(2)
             self._getLinks(sb)
 
-    
+
     def _formatDate(self, date_str: str) -> str:
         month, day, year = date_str.split('/')
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
 
     def _scrapePages(self, sb: SB):
+        verbose = os.getenv('VERBOSE', '0')
         for link in self.links:
             sb.open(link)
             sb.wait(1)
@@ -76,7 +103,7 @@ class SenateScraper:
                 filer = sb.find_element("h2.filedReport")
                 cells = row.find_elements("css selector", "td")
                 result = {
-                    'id': str(uuid.uuid4()),
+                    'id': None,
                     'Filer': re.search(r'\((.*?)\)', filer.text).group(1),
                     'Date': self._formatDate(cells[1].text),
                     'Owner': cells[2].text,
@@ -87,14 +114,63 @@ class SenateScraper:
                     'Amount': cells[7].text,
                     'Comment': None if cells[8].text == '--' else cells[8].text,
                 }
-                print("Scraped result:", result)
+                id = self._get_id(result)
+                if self.used_ids.get(id, False):
+                    if verbose == '1':
+                        print("Duplicate record found, skipping:", result)
+                    continue
+                self.used_ids[id] = True
+                result['id'] = id
+                if verbose == '1':
+                    print("Scraped result:", result)
                 self.data.append(result)
+
+
+    def _saveCSV(self):
+        if not self.data:
+            return
+        keys = self.data[0].keys()
+        with open('senate_disclosures.csv', 'w', newline='', encoding='utf-8') as output_file:
+            dict_writer = csv.DictWriter(output_file, fieldnames=keys)
+            dict_writer.writeheader()
+            dict_writer.writerows(self.data)
+
+
+    def _saveToAWS(self):
+        print("Saving results to AWS DynamoDB...")
+        if not self.data:
+            print("No data to save, skipping AWS save.")
+            return
+        dynamodb = boto3.resource(
+            'dynamodb',
+            region_name=self.aws_region,
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_KEY')
+        )
+        table = dynamodb.Table(self.dynamodb_table_name)
+        with table.batch_writer() as batch:
+            for item in self.data:
+                try:
+                    batch.put_item(Item=item)
+                except (NoCredentialsError, ClientError) as e:
+                    print("AWS save error:", repr(e))
+                    return
+        print(f"Saved {len(self.data)} records to DynamoDB table {self.dynamodb_table_name}.")
+
+
+    def saveResults(self):
+        if not self.data:
+            return
+        if os.getenv('OUTPUT_CSV', '0') == '1':
+            self._saveCSV()
+        if os.getenv('OUTPUT_AWS', '0') == '1':
+            self._saveToAWS()
 
 
     def scrape(self):
         try:
             with SB(uc=True, test=True, headless=True) as sb:
-                print("SB started, opening page:", self.start_url)
+                print("SB started, hunting down links...")
                 sb.open(self.start_url)
                 self._agreeToTerms(sb)
                 self._filterSearch(sb)
@@ -102,7 +178,10 @@ class SenateScraper:
                 self._getLinks(sb)
                 self.links = list(set(self.links))
                 if not self.links:
+                    print("No links found, stopping scrape.")
                     return
+                print(f"Found {len(self.links)} links, scraping pages...")
                 self._scrapePages(sb)
+                print(f"Scraped {len(self.data)} records.")
         except Exception as e:
             print("Scrape error:", repr(e))
