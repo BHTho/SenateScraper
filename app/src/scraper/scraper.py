@@ -18,11 +18,12 @@ class SenateScraper:
         self.fromDate_field_selector = "#fromDate"
         self.searchButton_selector = "button.btn.btn-primary"
         # self.fromDate = self._getFromDate()
-        self.fromDate = "10/01/2025" # hardcoded for testing
+        self.fromDate = "01/01/2015"
         self.resultsTable_selector = 'tbody'
         self.nextPageButton_selector = "#filedReports_next"
         self.links = []
         self.data = []
+        self.used_ids = {}
         self.aws_region = os.getenv('AWS_REGION', None)
         self.dynamodb_table_name = os.getenv('DYNAMO_TABLE_NAME', None)
         self._credentials_check()
@@ -35,10 +36,12 @@ class SenateScraper:
             assert os.getenv('AWS_ACCESS_KEY', None), "AWS_ACCESS_KEY not set"
             assert os.getenv('AWS_SECRET_KEY', None), "AWS_SECRET_KEY not set"
 
+
     # def _getFromDate(self):
     #     today = date.today()
-    #     one_week_ago = today - timedelta(weeks=1)
-    #     return one_week_ago.strftime("%m/%d/%Y")
+    #     one_day_ago = today - timedelta(days=1)
+    #     return one_day_ago.strftime("%m/%d/%Y")
+
 
     def _is_next_enabled(self, sb: SB):
         next_button = sb.find_element(self.nextPageButton_selector)
@@ -90,6 +93,7 @@ class SenateScraper:
 
 
     def _scrapePages(self, sb: SB):
+        verbose = os.getenv('VERBOSE', '0')
         for link in self.links:
             sb.open(link)
             sb.wait(1)
@@ -110,8 +114,14 @@ class SenateScraper:
                     'Amount': cells[7].text,
                     'Comment': None if cells[8].text == '--' else cells[8].text,
                 }
-                result['id'] = self._get_id(result)
-                if os.getenv('VERBOSE', '0') == '1':
+                id = self._get_id(result)
+                if self.used_ids.get(id, False):
+                    if verbose == '1':
+                        print("Duplicate record found, skipping:", result)
+                    continue
+                self.used_ids[id] = True
+                result['id'] = id
+                if verbose == '1':
                     print("Scraped result:", result)
                 self.data.append(result)
 
