@@ -27,9 +27,30 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+COPY run.py .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ .
 
-CMD ["python", "app/src/main.py"]
+CMD ["/bin/sh", "-c", " \
+    COMMAND_ARGS=\"--start-date ${START_DATE:-2024-01-01}\"; \
+    \
+    if [ \"${VISIBLE:-0}\" = \"1\" ]; then \
+        COMMAND_ARGS=\"$COMMAND_ARGS --visible\"; \
+    fi; \
+    \
+    if [ \"${VERBOSE:-0}\" = \"1\" ]; then \
+        COMMAND_ARGS=\"$COMMAND_ARGS --verbose\"; \
+    fi; \
+    \
+    if [ \"${OUTPUT_AWS:-0}\" = \"1\" ]; then \
+        COMMAND_ARGS=\"$COMMAND_ARGS --output-aws\"; \
+    fi; \
+    \
+    if [ \"${OUTPUT_CSV:-0}\" = \"1\" ]; then \
+        COMMAND_ARGS=\"$COMMAND_ARGS --output-csv\"; \
+    fi; \
+    \
+    exec python run.py $COMMAND_ARGS \
+"]

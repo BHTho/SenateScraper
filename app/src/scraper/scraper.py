@@ -1,50 +1,62 @@
-from seleniumbase import SB
-from datetime import date, timedelta
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from datetime import date, datetime
 import hashlib
 import re
 import json
 import csv
 import os
-import boto3
+from app.src.utils import get_dynamodb
 from botocore.exceptions import NoCredentialsError, ClientError
 
 
 class SenateScraper:
-    def __init__(self):
+    def __init__(self, **kwargs):
+        print(kwargs)
+        self._parse_user_args(kwargs)
         self.base_url = "https://efdsearch.senate.gov"
         self.start_url = f"{self.base_url}/search/home"
         self.agreeCheckbox_selector = "#agree_statement"
         self.senatorFiler_selector = "input.senator_filer"
         self.fromDate_field_selector = "#fromDate"
         self.searchButton_selector = "button.btn.btn-primary"
-        # self.fromDate = self._getFromDate()
-        self.fromDate = "01/01/2015"
         self.resultsTable_selector = 'tbody'
         self.nextPageButton_selector = "#filedReports_next"
         self.links = []
         self.data = []
         self.used_ids = {}
-        self.aws_region = os.getenv('AWS_REGION', None)
-        self.dynamodb_table_name = os.getenv('DYNAMO_TABLE_NAME', None)
         self._credentials_check()
 
 
+    def _parse_user_args(self, kwargs):
+        self.fromDate = kwargs.get('start_date', None)
+        self.fromDate = self.fromDate.replace('-', '/')
+        self.aws_region = os.getenv('AWS_REGION', None)
+        self.dynamodb_table_name = os.getenv('DYNAMO_TABLE_NAME', None)
+        self.verbose = kwargs.get('verbose', False)
+        self.visible = kwargs.get('visible', False)
+        self.output_aws = kwargs.get('output_aws', False)
+        self.output_csv = kwargs.get('output_csv', False)
+
+
     def _credentials_check(self):
-        if os.getenv('OUTPUT_AWS', '0') == '1':
+        if self.output_aws:
             assert self.aws_region, "AWS_REGION not set"
             assert self.dynamodb_table_name, "DYNAMO_TABLE_NAME not set"
             assert os.getenv('AWS_ACCESS_KEY', None), "AWS_ACCESS_KEY not set"
             assert os.getenv('AWS_SECRET_KEY', None), "AWS_SECRET_KEY not set"
+        assert self.fromDate, "START_DATE not set"
+        assert re.match(r'^\d{2}/\d{2}/\d{4}$', self.fromDate), "START_DATE must be in MM/DD/YYYY format"
+        parsed_date = datetime.strptime(self.fromDate, "%m/%d/%Y").date()
+        assert parsed_date <= date.today(), "START_DATE cannot be in the future"
+        assert parsed_date >= date(2015, 1, 1), "START_DATE cannot be before 2015-01-01"
 
 
-    # def _getFromDate(self):
-    #     today = date.today()
-    #     one_day_ago = today - timedelta(days=1)
-    #     return one_day_ago.strftime("%m/%d/%Y")
-
-
-    def _is_next_enabled(self, sb: SB):
-        next_button = sb.find_element(self.nextPageButton_selector)
+    def _is_next_enabled(self, driver):
+        next_button = driver.find_element(By.CSS_SELECTOR, self.nextPageButton_selector)
         class_attr = next_button.get_attribute("class")
         return "disabled" not in class_attr
 
@@ -56,35 +68,42 @@ class SenateScraper:
         return hashlib.md5(record_str).hexdigest()
 
 
-    def _agreeToTerms(self, sb: SB):
-        sb.wait_for_element(self.agreeCheckbox_selector, timeout=10)
-        sb.assert_element(self.agreeCheckbox_selector)
-        sb.click(self.agreeCheckbox_selector)
+    def _agreeToTerms(self, driver):
+        wait = WebDriverWait(driver, 10)
+        checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.agreeCheckbox_selector)))
+        checkbox.click()
 
 
-    def _filterSearch(self, sb: SB):
+    def _filterSearch(self, driver):
+        wait = WebDriverWait(driver, 10)
         # Senator CheckBox
-        sb.wait_for_element(self.senatorFiler_selector, timeout=10)
-        sb.assert_element(self.senatorFiler_selector)
-        sb.click(self.senatorFiler_selector)
+        senator_checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.senatorFiler_selector)))
+        senator_checkbox.click()
         # Date Filter
-        sb.assert_element(self.fromDate_field_selector)
-        sb.fill(self.fromDate_field_selector, self.fromDate)
+        date_field = driver.find_element(By.CSS_SELECTOR, self.fromDate_field_selector)
+        date_field.clear()
+        date_field.send_keys(self.fromDate)
         # Execute Search
-        sb.assert_element(self.searchButton_selector)
-        sb.click(self.searchButton_selector)
+        search_button = driver.find_element(By.CSS_SELECTOR, self.searchButton_selector)
+        search_button.click()
 
 
-    def _getLinks(self, sb: SB):
-        sb.assert_element(self.resultsTable_selector)
-        links = sb.find_elements(f"{self.resultsTable_selector} a")
+    def _getLinks(self, driver):
+        import time
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, self.resultsTable_selector)))
+        
+        links = driver.find_elements(By.CSS_SELECTOR, f"{self.resultsTable_selector} a")
         for link in links:
-            if link.get_attribute("href").startswith(f"{self.base_url}/search/view/ptr"):
-                self.links.append(link.get_attribute("href"))
-        if self._is_next_enabled(sb):
-            sb.click(self.nextPageButton_selector)
-            sb.wait(2)
-            self._getLinks(sb)
+            href = link.get_attribute("href")
+            if href and href.startswith(f"{self.base_url}/search/view/ptr"):
+                self.links.append(href)
+        
+        if self._is_next_enabled(driver):
+            next_button = driver.find_element(By.CSS_SELECTOR, self.nextPageButton_selector)
+            next_button.click()
+            time.sleep(2)
+            self._getLinks(driver)
 
 
     def _formatDate(self, date_str: str) -> str:
@@ -92,16 +111,24 @@ class SenateScraper:
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
 
-    def _scrapePages(self, sb: SB):
-        verbose = os.getenv('VERBOSE', '0')
+    def _scrapePages(self, driver):
+        import time
+        wait = WebDriverWait(driver, 10)
+        
         for link in self.links:
-            sb.open(link)
-            sb.wait(1)
-            sb.assert_element(self.resultsTable_selector)
-            table_rows = sb.find_elements(f"{self.resultsTable_selector} tr")
+            driver.get(link)
+            print(link)
+            time.sleep(1)
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, self.resultsTable_selector)))
+            
+            filer = driver.find_element(By.CSS_SELECTOR, "h2.filedReport")
+            table_rows = driver.find_elements(By.CSS_SELECTOR, f"{self.resultsTable_selector} tr")
+            
             for row in table_rows:
-                filer = sb.find_element("h2.filedReport")
-                cells = row.find_elements("css selector", "td")
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) < 9:
+                    continue
+                    
                 result = {
                     'id': None,
                     'Filer': re.search(r'\((.*?)\)', filer.text).group(1),
@@ -116,12 +143,12 @@ class SenateScraper:
                 }
                 id = self._get_id(result)
                 if self.used_ids.get(id, False):
-                    if verbose == '1':
+                    if self.verbose:
                         print("Duplicate record found, skipping:", result)
                     continue
                 self.used_ids[id] = True
                 result['id'] = id
-                if verbose == '1':
+                if self.verbose:
                     print("Scraped result:", result)
                 self.data.append(result)
 
@@ -141,12 +168,7 @@ class SenateScraper:
         if not self.data:
             print("No data to save, skipping AWS save.")
             return
-        dynamodb = boto3.resource(
-            'dynamodb',
-            region_name=self.aws_region,
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_KEY')
-        )
+        dynamodb = get_dynamodb()
         table = dynamodb.Table(self.dynamodb_table_name)
         with table.batch_writer() as batch:
             for item in self.data:
@@ -161,27 +183,40 @@ class SenateScraper:
     def saveResults(self):
         if not self.data:
             return
-        if os.getenv('OUTPUT_CSV', '0') == '1':
+        if self.output_csv:
             self._saveCSV()
-        if os.getenv('OUTPUT_AWS', '0') == '1':
+        if self.output_aws:
             self._saveToAWS()
 
 
     def scrape(self):
+        chrome_options = Options()
+        if not self.visible:
+            chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        
+        driver = None
         try:
-            with SB(uc=True, test=True, headless=True) as sb:
-                print("SB started, hunting down links...")
-                sb.open(self.start_url)
-                self._agreeToTerms(sb)
-                self._filterSearch(sb)
-                sb.wait(3)
-                self._getLinks(sb)
-                self.links = list(set(self.links))
-                if not self.links:
-                    print("No links found, stopping scrape.")
-                    return
-                print(f"Found {len(self.links)} links, scraping pages...")
-                self._scrapePages(sb)
-                print(f"Scraped {len(self.data)} records.")
+            driver = webdriver.Chrome(options=chrome_options)
+            print("Driver started, hunting down links...")
+            driver.get(self.start_url)
+            self._agreeToTerms(driver)
+            self._filterSearch(driver)
+            import time
+            time.sleep(3)
+            self._getLinks(driver)
+            self.links = list(set(self.links))
+            if not self.links:
+                print("No links found, stopping scrape.")
+                return
+            print(f"Found {len(self.links)} links, scraping pages...")
+            self._scrapePages(driver)
+            print(f"Scraped {len(self.data)} records.")
         except Exception as e:
             print("Scrape error:", repr(e))
+            import traceback
+            traceback.print_exc()
+        finally:
+            if driver:
+                driver.quit()
