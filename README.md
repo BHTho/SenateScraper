@@ -17,7 +17,7 @@ Before running the scraper, you must create a configuration file named **`.env`*
 * **Copy the example:** Duplicate the provided `.env_example` file and rename it to `.env`.
 * **Enter your settings:** Configure any necessary parameters, especially for the optional AWS S3 upload feature.
 
-If you are going to upload to AWS, then you'll need to ensure your DynamoDB table is set up and that you have all the credentials.
+If you're going to upload to AWS, you'll need to ensure your DynamoDB table is set up and that you have all the credentials.
 
 ---
 
@@ -63,7 +63,7 @@ Run the script using `python main.py`, followed by the required start date and y
 The results will be saved to a file named `senate_disclosures.csv` in the project directory.
 
 ```
-python main.py --start-date "MM-DD-YYY" --output-csv
+python run.py --start-date "MM-DD-YYY" --output-csv
 ```
 
 #### B. Upload to AWS S3 Bucket
@@ -71,7 +71,7 @@ python main.py --start-date "MM-DD-YYY" --output-csv
 The results will be uploaded directly to the S3 bucket configured in your **`.env`** file. You must have your AWS credentials (e.g., `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) configured in the `.env` file for this to work.
 
 ```
-python main.py --start-date "YYYY-MM-DD" --output-aws
+python run.py --start-date "YYYY-MM-DD" --output-aws
 ```
 
 ---
