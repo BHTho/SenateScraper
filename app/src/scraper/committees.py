@@ -18,6 +18,7 @@ class CommitteeScraper:
         print(kwargs)
         self.base_url = "https://www.senate.gov"
         self._init_homepage_css()
+        self._init_committee_page_css()
 
 
     def _init_homepage_css(self):
@@ -27,6 +28,9 @@ class CommitteeScraper:
         self.committee_link_starting_href = "/general/committee_membership/"
         self.href_cell = "tbody tr td:nth-child(4) a"
 
+    def _init_committee_page_css(self):
+        self.committee_name_selector = ".contenttitle"
+        self.members_selector = "tbody:first-of-type tr:nth-child(2)"
 
     def _scrape_links(self, driver):
         driver.get(self.base_url+self.committee_table_url)
@@ -36,7 +40,18 @@ class CommitteeScraper:
         for elem in a_list:
             href = elem.get_attribute('href')
             self.committee_urls.append(href)
+        self.committee_urls = list(set(self.committee_urls))
         print(self.committee_urls)
+
+    def _scrape_members(self, driver):
+        for link in self.committee_urls:
+            driver.get(link)
+            wait = WebDriverWait(driver, 10)
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, self.members_selector)))
+            members = driver.find_element(By.CSS_SELECTOR, self.members_selector)
+            committee_name = driver.find_element(By.CSS_SELECTOR, self.committee_name_selector)
+            print(committee_name.get_attribute('innerHTML'))
+            print(members.get_attribute('innerHTML'))
 
 
     def scrape(self):
@@ -48,6 +63,7 @@ class CommitteeScraper:
             driver = webdriver.Chrome(options=chrome_options)
             print("Driver started...")
             self._scrape_links(driver)
+            self._scrape_members(driver)
         except Exception as e:
             print("Scrape error:", repr(e))
             import traceback
