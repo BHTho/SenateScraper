@@ -28,9 +28,11 @@ class CommitteeScraper:
         self.committee_link_starting_href = "/general/committee_membership/"
         self.href_cell = "tbody tr td:nth-child(4) a"
 
+
     def _init_committee_page_css(self):
         self.committee_name_selector = ".contenttitle"
         self.members_selector = "tbody:first-of-type tr:nth-child(2)"
+
 
     def _scrape_links(self, driver):
         driver.get(self.base_url+self.committee_table_url)
@@ -43,6 +45,28 @@ class CommitteeScraper:
         self.committee_urls = list(set(self.committee_urls))
         print(self.committee_urls)
 
+
+    def _clean_committee_name(self, name: str) -> str:
+        prefixes = [
+            "Committee on ",
+            "Joint Committee on ",
+            "Joint Committee of ",
+            "Select Committee on ",
+            "Special Committee on "
+        ]
+        for prefix in prefixes:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+        name = name.replace(" and ", " & ")
+        name = name.replace(" for ", " ")
+        name = name.replace(" of ", " ")
+        name = name.replace(",", "")
+        name = name.replace(" ", "_")
+        name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+        return name
+
+
     def _scrape_members(self, driver):
         for link in self.committee_urls:
             driver.get(link)
@@ -50,8 +74,12 @@ class CommitteeScraper:
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, self.members_selector)))
             members = driver.find_element(By.CSS_SELECTOR, self.members_selector)
             committee_name = driver.find_element(By.CSS_SELECTOR, self.committee_name_selector)
-            print(committee_name.get_attribute('innerHTML'))
-            print(members.get_attribute('innerHTML'))
+            print(self._clean_committee_name(committee_name.text))
+            member_list = members.text.replace(',', ' ').split('\n')
+            for member in member_list:
+                print(member.split()[0:2])
+
+            # store as : "senator_name, committees{}"
 
 
     def scrape(self):
